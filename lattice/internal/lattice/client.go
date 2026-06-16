@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"strings"
 
 	"github.com/daemon/lattice/internal/auth"
 	entitymanagerv1 "github.com/anduril/lattice-sdk-go/src/anduril/entitymanager/v1"
@@ -22,6 +23,9 @@ type Client struct {
 // NewClient dials a Lattice endpoint and returns a ready-to-use client.
 // The cfg must include valid OAuth credentials.
 func NewClient(ctx context.Context, cfg auth.Config, insecureTransport bool) (*Client, error) {
+	grpcURL := strings.TrimPrefix(cfg.BaseURL, "https://")
+	grpcURL = strings.TrimPrefix(grpcURL, "http://")
+
 	var creds credentials.TransportCredentials
 	if insecureTransport {
 		creds = insecure.NewCredentials()
@@ -36,7 +40,7 @@ func NewClient(ctx context.Context, cfg auth.Config, insecureTransport bool) (*C
 		grpc.WithPerRPCCredentials(tokenSource),
 	}
 
-	conn, err := grpc.NewClient(cfg.BaseURL, opts...)
+	conn, err := grpc.NewClient(grpcURL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial Lattice: %w", err)
 	}
