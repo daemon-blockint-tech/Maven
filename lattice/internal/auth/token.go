@@ -59,7 +59,11 @@ func (t *TokenSource) accessToken(ctx context.Context) (string, error) {
 		return t.token, nil
 	}
 
-	endpoint := strings.TrimRight(t.cfg.BaseURL, "/") + "/api/v1/oauth/token"
+	baseURL := t.cfg.BaseURL
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "https://" + baseURL
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/oauth/token"
 	body := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {t.cfg.ClientID},
