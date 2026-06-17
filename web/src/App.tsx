@@ -25,21 +25,21 @@ const App = () => {
   useEffect(() => {
     if (!containerRef.current) return
 
-    Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN || ''
+    const envVars = import.meta.env as any
+    Cesium.Ion.defaultAccessToken = envVars.VITE_CESIUM_TOKEN || ''
 
     const viewer = new Cesium.Viewer(containerRef.current, {
-      terrainProvider: Cesium.createWorldTerrain(),
       animation: false,
       baseLayerPicker: true,
       fullscreenButton: true,
       infoBox: false,
-      selectionIndicatorSize: 0,
+      selectionIndicator: false,
     })
 
     viewer.scene.globe.enableLighting = true
     viewerRef.current = viewer
 
-    const wsUrl = `${import.meta.env.VITE_API_URL || 'ws://localhost:8080'}/ws`
+    const wsUrl = `${envVars.VITE_API_URL || 'ws://localhost:8080'}/ws`
 
     const onMessage = (msg: EntityMessage) => {
       if (msg.type === 'update') {
