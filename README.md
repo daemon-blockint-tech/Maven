@@ -1,13 +1,16 @@
-# Lattice Full Visualization Stack
+# Maven — Lattice Full Visualization Stack
 
 Real-time Lattice entity ingestion → Neo4j graph persistence → CesiumJS 3D globe visualization.
+
+Validated live on sandbox `wc0sqy` — 4 FISHING VESSEL entities streaming with correct disposition mapping.
 
 ## Architecture
 
 ```
-Lattice sandbox
+Lattice sandbox (wc0sqy)
     ↓ (gRPC/TLS, StreamEntityComponents)
 Go ingest service (localhost:8080)
+    ↓  disposition normalization (extractDisposition)
     ↓ (bolt protocol)
     Neo4j database (localhost:7687)
     ↓ (WebSocket)
@@ -74,11 +77,68 @@ npm run dev
 ```
 
 You should see:
-- **Green dots** on the globe for each entity at its lat/lon
-- **Labels** showing entity name
-- **Real-time updates** as entities are published via `go run ./cmd/publish`
+- **Colored dots** on the globe per disposition (orange = suspect, cyan = friendly, red = hostile, yellow = unknown)
+- **Labels** showing entity name and ontology
+- **Real-time updates** as entities stream from Lattice or are published via `go run ./cmd/publish`
 
-## Project structure
+## Disposition Mapping
+
+The ingest pipeline normalizes Lattice SDK enum strings to lowercase UI keys before persisting to Neo4j and broadcasting via WebSocket.
+
+| SDK String | Normalized Key | UI Color |
+|---|---|---|
+| `DISPOSITION_SUSPICIOUS` | `suspect` | Orange `rgba(255,146,18,1)` |
+| `DISPOSITION_HOSTILE` | `hostile` | Red `rgba(255,55,55,1)` |
+| `DISPOSITION_FRIENDLY` | `friendly` | Cyan `rgba(24,255,255,1)` |
+| `DISPOSITION_ASSUMED_FRIEND` | `assumed_friend` | Green `rgba(0,255,60,1)` |
+| `DISPOSITION_NEUTRAL` | `neutral` | Pink `rgba(255,71,206,1)` |
+| `DISPOSITION_PENDING` | `pending` | Gray `rgba(215,216,219,1)` |
+| `DISPOSITION_UNKNOWN` / fallback | `unknown` | Yellow `rgba(255,255,33,1)` |
+
+### extractDisposition logic
+
+```go
+func extractDisposition(entity *lattice.Entity) string {
+    if entity.MilView == nil {
+        return "unknown"
+    }
+    raw := entity.MilView.Disposition.String()
+    switch raw {
+    case "DISPOSITION_SUSPICIOUS":   return "suspect"
+    case "DISPOSITION_HOSTILE":      return "hostile"
+    case "DISPOSITION_FRIENDLY":     return "friendly"
+    case "DISPOSITION_ASSUMED_FRIEND": return "assumed_friend"
+    case "DISPOSITION_NEUTRAL":      return "neutral"
+    case "DISPOSITION_PENDING":      return "pending"
+    default:                         return "unknown"
+    }
+}
+```
+
+## Multi-Source Ingestion
+
+Maven ingests from multiple Lattice data sources. Ensure `extractDisposition()` is applied uniformly across all sources:
+
+| Data Type | Source | Notes |
+|---|---|---|
+| `anduril` | Native Lattice entities | Primary source |
+| `ncct` | Naval Command & Control | Same disposition pipeline |
+| `legacy_integration` | External provenance | Normalized at ingest boundary |
+
+## Live Validation (17 Jun 2026)
+
+Sandbox `wc0sqy` confirmed active with the following entities:
+
+| Entity | UUID | Data Type | Disposition |
+|---|---|---|---|
+| FISHING VESSEL 13186 | 24a5ed37-a961-41b6-8ed4-f7ea1617d86a | anduril | Suspect |
+| FISHING VESSEL 37958 | 0e0c9468-4a49-4fed-bb1d-294709a62fa9 | anduril | Suspect |
+| FISHING VESSEL 50698 | ef8815e4-4157-46a2-81d8-209ada42d4b0 | anduril | Suspect |
+| FISHING VESSEL 8390 | 527417b0-3818-476c-86b4-88f93b7b373c | ncct | Suspect |
+
+All entities tagged `Simulated`, status `Live`, created `0519`.
+
+## Project Structure
 
 ```
 lattice/
@@ -107,21 +167,25 @@ web/
 ## API / Data Flow
 
 ### Entity Message (WebSocket)
+
 ```json
 {
   "type": "update",
-  "entity_id": "test-vessel-001",
-  "name": "Test Vessel",
-  "latitude": 37.7749,
-  "longitude": -122.4194,
+  "entity_id": "24a5ed37-a961-41b6-8ed4-f7ea1617d86a",
+  "name": "FISHING VESSEL 13186",
+  "latitude": 0.0,
+  "longitude": 0.0,
   "ontology": "TEMPLATE_TRACK",
-  "updated_at": "2026-06-16T21:30:00Z"
+  "disposition": "suspect",
+  "data_type": "anduril",
+  "updated_at": "2026-06-17T09:19:00Z"
 }
 ```
 
 ### Neo4j Schema
+
 ```cypher
-(Entity {id, name, latitude, longitude, ontology, updatedAt})
+(Entity {id, name, latitude, longitude, ontology, disposition, dataType, updatedAt})
 ```
 
 Relationships are created from the entity's `relationships` component (if present).
@@ -141,6 +205,10 @@ Relationships are created from the entity's `relationships` component (if presen
 - Check ingest logs for stream errors
 - Verify Lattice sandbox has live entities to stream
 - Run `publish` to create a test entity
+
+**All entities appear yellow (unknown disposition)**
+- Check that `extractDisposition()` handles the raw `DISPOSITION_` prefix from the SDK enum
+- Log `entity.MilView.Disposition.String()` to verify the raw string value before mapping
 
 **Cesium globe doesn't show imagery**
 - Use free Cesium Ion token (https://cesium.com/ion)
