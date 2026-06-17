@@ -13,11 +13,29 @@ interface Entity {
   cesiumEntity?: Cesium.Entity
 }
 
+// Apply selected or default visual style directly to a Cesium entity.
+function applyEntityStyle(cesiumEntity: Cesium.Entity, selected: boolean) {
+  if (cesiumEntity.point) {
+    cesiumEntity.point.pixelSize = new Cesium.ConstantProperty(selected ? 12 : 8)
+    cesiumEntity.point.color = new Cesium.ConstantProperty(
+      selected ? Cesium.Color.RED : Cesium.Color.LIME
+    )
+  }
+  if (cesiumEntity.label) {
+    cesiumEntity.label.font = new Cesium.ConstantProperty(
+      selected ? 'bold 14px sans-serif' : '12px sans-serif'
+    )
+  }
+}
+
 const App = () => {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Cesium.Viewer | null>(null)
   const wsRef = useRef<EntityWebSocket | null>(null)
   const entitiesRef = useRef<Map<string, Entity>>(new Map())
+
+  // selectedIdRef keeps onMessage (a stale closure) in sync with current selection.
+  const selectedIdRef = useRef<string | null>(null)
 
   const [status, setStatus] = useState<string>('Connecting...')
   const [entityCount, setEntityCount] = useState<number>(0)
@@ -56,15 +74,16 @@ const App = () => {
           updatedAt: msg.updated_at || new Date().toISOString(),
         }
 
-        const entities = entitiesRef.current
-        if (entities.has(msg.entity_id)) {
-          const prev = entities.get(msg.entity_id)!
+        const map = entitiesRef.current
+        if (map.has(msg.entity_id)) {
+          const prev = map.get(msg.entity_id)!
           if (prev.cesiumEntity) {
             viewer.entities.remove(prev.cesiumEntity)
           }
         }
 
-        const isSelected = msg.entity_id === selectedId
+        // Read current selection from ref, not stale closure state.
+        const isSelected = msg.entity_id === selectedIdRef.current
         const cesiumEntity = viewer.entities.add({
           position: Cesium.Cartesian3.fromDegrees(entity.longitude, entity.latitude),
           point: {
@@ -131,11 +150,26 @@ const App = () => {
   })
 
   const handleSelectEntity = (id: string) => {
-    setSelectedId(id)
-    const entity = entitiesRef.current.get(id)
-    if (entity?.cesiumEntity) {
-      viewerRef.current?.flyTo(entity.cesiumEntity, { duration: 0.5 })
+    const map = entitiesRef.current
+
+    // Deselect previous entity imperatively.
+    const prevId = selectedIdRef.current
+    if (prevId && prevId !== id) {
+      const prev = map.get(prevId)
+      if (prev?.cesiumEntity) {
+        applyEntityStyle(prev.cesiumEntity, false)
+      }
     }
+
+    // Select new entity imperatively.
+    const next = map.get(id)
+    if (next?.cesiumEntity) {
+      applyEntityStyle(next.cesiumEntity, true)
+      viewerRef.current?.flyTo(next.cesiumEntity, { duration: 0.5 })
+    }
+
+    selectedIdRef.current = id
+    setSelectedId(id)
   }
 
   return (
