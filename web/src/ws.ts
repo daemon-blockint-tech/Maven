@@ -5,6 +5,7 @@ export interface EntityMessage {
   latitude?: number
   longitude?: number
   ontology?: string
+  disposition?: string // MIL-STD-2525 affiliation: hostile | friendly | neutral | suspect | unknown
   updated_at?: string
 }
 

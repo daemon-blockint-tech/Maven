@@ -9,22 +9,61 @@ interface Entity {
   latitude: number
   longitude: number
   ontology: string
+  disposition: string
   updatedAt: string
   cesiumEntity?: Cesium.Entity
 }
 
-// Apply selected or default visual style directly to a Cesium entity.
-function applyEntityStyle(cesiumEntity: Cesium.Entity, selected: boolean) {
+// MIL-STD-2525C affiliation color scheme.
+// Priority: disposition (from MilView) > ontology template fallback.
+// Selected state overrides base color with a bright white outline + larger point.
+const DISPOSITION_COLORS: Record<string, Cesium.Color> = {
+  hostile:          Cesium.Color.fromCssColorString('#FF3333'), // red
+  assumed_hostile:  Cesium.Color.fromCssColorString('#FF3333'),
+  suspect:          Cesium.Color.fromCssColorString('#FF9900'), // orange-red
+  unknown:          Cesium.Color.fromCssColorString('#FFFF00'), // yellow
+  neutral:          Cesium.Color.fromCssColorString('#00FF00'), // green
+  assumed_neutral:  Cesium.Color.fromCssColorString('#00FF00'),
+  friendly:         Cesium.Color.fromCssColorString('#00BFFF'), // cyan-blue
+  assumed_friendly: Cesium.Color.fromCssColorString('#00BFFF'),
+}
+
+// Sidebar badge colors for the entity list.
+const DISPOSITION_BADGE: Record<string, string> = {
+  hostile:  '#FF3333',
+  suspect:  '#FF9900',
+  unknown:  '#CCCC00',
+  neutral:  '#00CC00',
+  friendly: '#00BFFF',
+}
+
+function getDispositionColor(disposition: string): Cesium.Color {
+  return DISPOSITION_COLORS[disposition] ?? DISPOSITION_COLORS['unknown']
+}
+
+function getDispositionBadge(disposition: string): string {
+  return DISPOSITION_BADGE[disposition] ?? DISPOSITION_BADGE['unknown']
+}
+
+// Apply visual style to a Cesium entity. Selected state increases size and
+// adds a bright white outline; base color is driven by MIL-STD-2525 disposition.
+function applyEntityStyle(cesiumEntity: Cesium.Entity, selected: boolean, disposition: string) {
+  const baseColor = getDispositionColor(disposition)
   if (cesiumEntity.point) {
-    cesiumEntity.point.pixelSize = new Cesium.ConstantProperty(selected ? 12 : 8)
+    cesiumEntity.point.pixelSize = new Cesium.ConstantProperty(selected ? 14 : 8)
     cesiumEntity.point.color = new Cesium.ConstantProperty(
-      selected ? Cesium.Color.RED : Cesium.Color.LIME
+      selected ? baseColor.brighten(0.4, new Cesium.Color()) : baseColor
     )
+    cesiumEntity.point.outlineColor = new Cesium.ConstantProperty(
+      selected ? Cesium.Color.WHITE : Cesium.Color.BLACK
+    )
+    cesiumEntity.point.outlineWidth = new Cesium.ConstantProperty(selected ? 3 : 1)
   }
   if (cesiumEntity.label) {
     cesiumEntity.label.font = new Cesium.ConstantProperty(
       selected ? 'bold 14px sans-serif' : '12px sans-serif'
     )
+    cesiumEntity.label.fillColor = new Cesium.ConstantProperty(Cesium.Color.WHITE)
   }
 }
 
@@ -34,7 +73,7 @@ const App = () => {
   const wsRef = useRef<EntityWebSocket | null>(null)
   const entitiesRef = useRef<Map<string, Entity>>(new Map())
 
-  // selectedIdRef keeps onMessage (a stale closure) in sync with current selection.
+  // selectedIdRef keeps onMessage (stale closure) in sync with current selection.
   const selectedIdRef = useRef<string | null>(null)
 
   const [status, setStatus] = useState<string>('Connecting...')
@@ -43,6 +82,7 @@ const App = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchText, setSearchText] = useState<string>('')
   const [filterOntology, setFilterOntology] = useState<string>('All')
+  const [filterDisposition, setFilterDisposition] = useState<string>('All')
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -71,6 +111,7 @@ const App = () => {
           latitude: msg.latitude || 0,
           longitude: msg.longitude || 0,
           ontology: msg.ontology || 'unknown',
+          disposition: msg.disposition || 'unknown',
           updatedAt: msg.updated_at || new Date().toISOString(),
         }
 
@@ -82,15 +123,16 @@ const App = () => {
           }
         }
 
-        // Read current selection from ref, not stale closure state.
         const isSelected = msg.entity_id === selectedIdRef.current
+        const baseColor = getDispositionColor(entity.disposition)
+
         const cesiumEntity = viewer.entities.add({
           position: Cesium.Cartesian3.fromDegrees(entity.longitude, entity.latitude),
           point: {
-            pixelSize: isSelected ? 12 : 8,
-            color: isSelected ? Cesium.Color.RED : Cesium.Color.LIME,
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 2,
+            pixelSize: isSelected ? 14 : 8,
+            color: isSelected ? baseColor.brighten(0.4, new Cesium.Color()) : baseColor,
+            outlineColor: isSelected ? Cesium.Color.WHITE : Cesium.Color.BLACK,
+            outlineWidth: isSelected ? 3 : 1,
           },
           label: {
             text: entity.name,
@@ -131,22 +173,21 @@ const App = () => {
     })
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.disconnect()
-      }
-      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
-        viewerRef.current.destroy()
-      }
+      if (wsRef.current) wsRef.current.disconnect()
+      if (viewerRef.current && !viewerRef.current.isDestroyed()) viewerRef.current.destroy()
     }
   }, [])
 
   const ontologies = Array.from(new Set(entities.map(e => e.ontology)))
+  const dispositions = Array.from(new Set(entities.map(e => e.disposition)))
+
   const filteredEntities = entities.filter(e => {
     const matchesSearch = searchText === '' ||
       e.name.toLowerCase().includes(searchText.toLowerCase()) ||
       e.id.toLowerCase().includes(searchText.toLowerCase())
     const matchesOntology = filterOntology === 'All' || e.ontology === filterOntology
-    return matchesSearch && matchesOntology
+    const matchesDisposition = filterDisposition === 'All' || e.disposition === filterDisposition
+    return matchesSearch && matchesOntology && matchesDisposition
   })
 
   const handleSelectEntity = (id: string) => {
@@ -156,15 +197,13 @@ const App = () => {
     const prevId = selectedIdRef.current
     if (prevId && prevId !== id) {
       const prev = map.get(prevId)
-      if (prev?.cesiumEntity) {
-        applyEntityStyle(prev.cesiumEntity, false)
-      }
+      if (prev?.cesiumEntity) applyEntityStyle(prev.cesiumEntity, false, prev.disposition)
     }
 
     // Select new entity imperatively.
     const next = map.get(id)
     if (next?.cesiumEntity) {
-      applyEntityStyle(next.cesiumEntity, true)
+      applyEntityStyle(next.cesiumEntity, true, next.disposition)
       viewerRef.current?.flyTo(next.cesiumEntity, { duration: 0.5 })
     }
 
@@ -175,10 +214,7 @@ const App = () => {
   return (
     <div style={{ width: '100vw', height: '100vh', margin: 0, padding: 0, display: 'flex', flexDirection: 'row' }}>
       {/* Globe */}
-      <div
-        ref={containerRef}
-        style={{ flex: 1, height: '100%' }}
-      />
+      <div ref={containerRef} style={{ flex: 1, height: '100%' }} />
 
       {/* Sidebar */}
       <div style={{
@@ -196,6 +232,16 @@ const App = () => {
         <div style={{ padding: '12px', borderBottom: '1px solid #333' }}>
           <div style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>Entity Explorer</div>
           <div style={{ fontSize: '12px', color: '#999' }}>{status}</div>
+        </div>
+
+        {/* Legend */}
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #333', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          {Object.entries(DISPOSITION_BADGE).map(([disp, color]) => (
+            <div key={disp} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
+              <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: color, border: '1px solid #555' }} />
+              <span style={{ color: '#aaa', textTransform: 'capitalize' }}>{disp}</span>
+            </div>
+          ))}
         </div>
 
         {/* Search */}
@@ -218,20 +264,35 @@ const App = () => {
           />
         </div>
 
-        {/* Filter */}
-        <div style={{ padding: '8px 12px', borderBottom: '1px solid #333' }}>
+        {/* Filters */}
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #333', display: 'flex', gap: '8px' }}>
           <select
-            value={filterOntology}
-            onChange={(e) => setFilterOntology(e.target.value)}
+            value={filterDisposition}
+            onChange={(e) => setFilterDisposition(e.target.value)}
             style={{
-              width: '100%',
+              flex: 1,
               padding: '6px 8px',
               backgroundColor: '#2a2a2a',
               color: '#e0e0e0',
               border: '1px solid #444',
               borderRadius: '4px',
               fontSize: '12px',
-              boxSizing: 'border-box',
+            }}
+          >
+            <option>All</option>
+            {dispositions.map(d => <option key={d}>{d}</option>)}
+          </select>
+          <select
+            value={filterOntology}
+            onChange={(e) => setFilterOntology(e.target.value)}
+            style={{
+              flex: 1,
+              padding: '6px 8px',
+              backgroundColor: '#2a2a2a',
+              color: '#e0e0e0',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              fontSize: '12px',
             }}
           >
             <option>All</option>
@@ -241,13 +302,10 @@ const App = () => {
 
         {/* Entity List */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          <table style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: '12px',
-          }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
             <thead style={{ position: 'sticky', top: 0, backgroundColor: '#222', borderBottom: '1px solid #333' }}>
               <tr>
+                <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 'bold', color: '#aaa', width: '12px' }}></th>
                 <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 'bold', color: '#aaa' }}>Name</th>
                 <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 'bold', color: '#aaa' }}>Ontology</th>
               </tr>
@@ -259,25 +317,33 @@ const App = () => {
                   onClick={() => handleSelectEntity(e.id)}
                   style={{
                     cursor: 'pointer',
-                    backgroundColor: selectedId === e.id ? '#2a4a2a' : 'transparent',
+                    backgroundColor: selectedId === e.id ? '#1e2e3e' : 'transparent',
                     borderBottom: '1px solid #2a2a2a',
-                    transition: 'background-color 0.2s',
+                    transition: 'background-color 0.15s',
                   }}
                   onMouseEnter={(ev) => {
-                    if (selectedId !== e.id) {
-                      (ev.currentTarget as HTMLElement).style.backgroundColor = '#282828'
-                    }
+                    if (selectedId !== e.id)
+                      (ev.currentTarget as HTMLElement).style.backgroundColor = '#242424'
                   }}
                   onMouseLeave={(ev) => {
-                    if (selectedId !== e.id) {
+                    if (selectedId !== e.id)
                       (ev.currentTarget as HTMLElement).style.backgroundColor = 'transparent'
-                    }
                   }}
                 >
-                  <td style={{ padding: '6px 8px', color: selectedId === e.id ? '#4f4' : '#e0e0e0' }}>
+                  {/* Disposition color dot */}
+                  <td style={{ padding: '6px 4px 6px 8px' }}>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: getDispositionBadge(e.disposition),
+                      border: '1px solid #555',
+                    }} />
+                  </td>
+                  <td style={{ padding: '6px 8px', color: selectedId === e.id ? '#7cf' : '#e0e0e0' }}>
                     {e.name}
                   </td>
-                  <td style={{ padding: '6px 8px', color: '#999' }}>{e.ontology}</td>
+                  <td style={{ padding: '6px 8px', color: '#777', fontSize: '11px' }}>{e.ontology}</td>
                 </tr>
               ))}
             </tbody>

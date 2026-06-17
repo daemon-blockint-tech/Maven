@@ -33,13 +33,14 @@ type Client struct {
 
 // EntityMessage is sent to all connected clients on entity updates.
 type EntityMessage struct {
-	Type      string    `json:"type"` // "update", "delete"
-	EntityID  string    `json:"entity_id"`
-	Name      string    `json:"name,omitempty"`
-	Latitude  float64   `json:"latitude,omitempty"`
-	Longitude float64   `json:"longitude,omitempty"`
-	Ontology  string    `json:"ontology,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	Type        string    `json:"type"` // "update", "delete"
+	EntityID    string    `json:"entity_id"`
+	Name        string    `json:"name,omitempty"`
+	Latitude    float64   `json:"latitude,omitempty"`
+	Longitude   float64   `json:"longitude,omitempty"`
+	Ontology    string    `json:"ontology,omitempty"`
+	Disposition string    `json:"disposition,omitempty"` // MIL-STD-2525 affiliation
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
 // Ingest holds the Lattice client and Neo4j store.
@@ -198,10 +199,33 @@ func broadcast(msg EntityMessage) {
 	}
 }
 
+// extractDisposition maps the Lattice MilView Disposition enum to a canonical
+// MIL-STD-2525 affiliation string understood by the frontend color mapper.
+func extractDisposition(entity *entitymanagerv1.Entity) string {
+	if entity.MilView == nil {
+		return "unknown"
+	}
+	switch entity.MilView.Disposition {
+	case entitymanagerv1.Disposition_DISPOSITION_HOSTILE,
+		entitymanagerv1.Disposition_DISPOSITION_ASSUMED_HOSTILE:
+		return "hostile"
+	case entitymanagerv1.Disposition_DISPOSITION_FRIENDLY,
+		entitymanagerv1.Disposition_DISPOSITION_ASSUMED_FRIENDLY:
+		return "friendly"
+	case entitymanagerv1.Disposition_DISPOSITION_NEUTRAL,
+		entitymanagerv1.Disposition_DISPOSITION_ASSUMED_NEUTRAL:
+		return "neutral"
+	case entitymanagerv1.Disposition_DISPOSITION_SUSPECT:
+		return "suspect"
+	default:
+		return "unknown"
+	}
+}
+
 // streamEntities subscribes to the Lattice entity stream and persists entities to Neo4j.
 func (i *Ingest) streamEntities(ctx context.Context) {
 	req := &entitymanagerv1.StreamEntityComponentsRequest{
-		IncludeAllComponents: true,
+		IncludeAllComponents:  true,
 		HeartbeatPeriodMillis: 30000,
 	}
 
@@ -243,11 +267,14 @@ func (i *Ingest) streamEntities(ctx context.Context) {
 			name = entity.Aliases.Name
 		}
 
-		// Extract ontology
+		// Extract ontology template
 		ontology := ""
 		if entity.Ontology != nil {
 			ontology = entity.Ontology.Template.String()
 		}
+
+		// Extract MIL-STD-2525 disposition
+		disposition := extractDisposition(entity)
 
 		// Persist to Neo4j
 		switch event.EventType {
@@ -264,18 +291,18 @@ func (i *Ingest) streamEntities(ctx context.Context) {
 				log.Printf("UpsertEntity error: %v", err)
 			}
 
-			// Broadcast to WS clients
 			broadcast(EntityMessage{
-				Type:      "update",
-				EntityID:  entity.EntityId,
-				Name:      name,
-				Latitude:  lat,
-				Longitude: lon,
-				Ontology:  ontology,
-				UpdatedAt: time.Now(),
+				Type:        "update",
+				EntityID:    entity.EntityId,
+				Name:        name,
+				Latitude:    lat,
+				Longitude:   lon,
+				Ontology:    ontology,
+				Disposition: disposition,
+				UpdatedAt:   time.Now(),
 			})
 
-			log.Printf("Entity %s: %s @ (%.4f, %.4f)", entity.EntityId, name, lat, lon)
+			log.Printf("Entity %s: %s [%s/%s] @ (%.4f, %.4f)", entity.EntityId, name, ontology, disposition, lat, lon)
 
 		case entitymanagerv1.EventType_EVENT_TYPE_DELETED:
 			if err := i.graphStore.DeleteEntity(ctx, entity.EntityId); err != nil {
